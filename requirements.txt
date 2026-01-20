@@ -12,7 +12,7 @@ faiss-cpu
 sentence-transformers
 wikipedia
 arxiv
-duckduckgo-search==6.1.0
+duckduckgo-search>=6.1.0
 pillow
 pytesseract
 unstructured
