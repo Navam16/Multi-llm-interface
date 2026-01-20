@@ -1,0 +1,31 @@
+# Git
+.git
+.gitignore
+
+# Python Cache & Artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environments (CRITICAL to ignore these)
+venv/
+env/
+.venv/
+
+# Secrets & Environment Variables
+.env
+.streamlit/secrets.toml
+
+# Notebooks
+.ipynb_checkpoints
+*.ipynb
+
+# OS System Files
+.DS_Store
+
+# Application Temporary Files
+# (These are files your app creates while running; we don't want to copy old ones in)
+temp.pdf
+temp_knowledge.pdf
+*.log
