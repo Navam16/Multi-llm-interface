@@ -1,0 +1,42 @@
+# ---------- 1. Base Image ----------
+FROM python:3.10-slim
+
+# ---------- 2. System Dependencies (The "Eyes" of the AI) ----------
+# We added 'libglib2.0-0' and 'curl' which are needed for Image/OCR tools
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    software-properties-common \
+    git \
+    poppler-utils \
+    tesseract-ocr \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------- 3. Environment Variables ----------
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# ---------- 4. Working Directory ----------
+WORKDIR /app
+
+# ---------- 5. Install Python Dependencies ----------
+COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# ---------- 6. Copy App Code ----------
+COPY . .
+
+# ---------- 7. Streamlit Configuration ----------
+EXPOSE 8501
+
+# ---------- 8. Healthcheck (Recommended for Production) ----------
+# Checks if the app is alive every 30s so Docker knows if it crashed
+HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+
+# ---------- 9. Run Streamlit App ----------
+CMD ["streamlit", "run", "app.py", \
+     "--server.port=8501", \
+     "--server.address=0.0.0.0"]
