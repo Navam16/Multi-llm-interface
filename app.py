@@ -26,7 +26,7 @@ def main():
 
     # --- SIDEBAR ---
     with st.sidebar:
-        st.title("🧠 OmniAgent Ultra")
+        st.title("🧠 NAVAM-LLM")
         st.caption("Multi-Modal • Anti-Hallucination")
         
         model_choice = st.selectbox("Choose Brain", 
