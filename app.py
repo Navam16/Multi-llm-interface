@@ -2,16 +2,27 @@ import streamlit as st
 import os
 import uuid
 import tempfile
+import shutil
 from PIL import Image
 import pytesseract
 from typing import List, TypedDict, Annotated
 
 # --- 1. CONFIG & STYLING ---
 st.set_page_config(page_title="OmniAgent Ultra", page_icon="🧠", layout="wide")
+
+# --- TESSERACT CONFIG FOR LINUX/STREAMLIT CLOUD ---
+# If running on Linux (Streamlit Cloud), explicitly set the path if needed
+if os.name == 'posix':
+    # This is where apt-get installs it usually
+    pytesseract.pytesseract.tesseract_cmd = shutil.which("tesseract")
+
 st.markdown("""
 <style>
     .stApp { background-color: #f8fafc; }
-    .stChatInput { position: fixed; bottom: 3rem; }
+    
+    /* FIX: We removed the 'fixed' positioning line here. 
+       Now the chat input will automatically stretch to the full width of the screen. */
+       
     .status-box {
         padding: 10px; border-radius: 5px; margin-bottom: 10px;
         font-size: 0.9em;
