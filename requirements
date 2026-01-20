@@ -1,26 +1,20 @@
-# --- Core UI & Framework ---
 streamlit
 langchain-core
-langchain-community==0.3.1
-langchain-text-splitters
-langgraph
-langsmith
+langchain-community
 langchain-groq
 langchain-openai
 langchain-google-genai
+langchain-text-splitters
 langchain-huggingface
+langgraph
+pypdf
 faiss-cpu
 sentence-transformers
-
-# --- Document Loading (The Critical Part) ---
-pypdf
-pillow             # Required for Image processing
-pytesseract        # Required for OCR (reading text from images)
-unstructured       # Required for advanced file parsing
-networkx           # Dependency for unstructured
-chardet            # Helps with encoding errors
-
-# --- Tools ---
-duckduckgo-search==6.1.0
 wikipedia
 arxiv
+duckduckgo-search
+pillow
+pytesseract
+unstructured
+networkx
+chardet
