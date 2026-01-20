@@ -1,4 +1,174 @@
-# ... (Keep all imports and classes like FileProcessor and RAGEngine exactly the same) ...
+import streamlit as st
+import os
+import uuid
+import tempfile
+from PIL import Image
+import pytesseract
+from typing import List, TypedDict, Annotated
+
+# --- 1. CONFIG & STYLING ---
+st.set_page_config(page_title="OmniAgent Ultra", page_icon="🧠", layout="wide")
+st.markdown("""
+<style>
+    .stApp { background-color: #f8fafc; }
+    .stChatInput { position: fixed; bottom: 3rem; }
+    .status-box {
+        padding: 10px; border-radius: 5px; margin-bottom: 10px;
+        font-size: 0.9em;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# --- 2. CORE IMPORTS ---
+try:
+    from langchain_groq import ChatGroq
+    from langchain_openai import ChatOpenAI
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from langchain_community.document_loaders import PyPDFLoader
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from langchain_community.vectorstores import FAISS
+    from langchain_huggingface import HuggingFaceEmbeddings
+    from langchain_community.tools import WikipediaQueryRun, ArxivQueryRun, DuckDuckGoSearchRun
+    from langchain_community.utilities import WikipediaAPIWrapper, ArxivAPIWrapper
+    from langchain_core.tools import tool
+    from langgraph.graph import StateGraph, START, END
+    from langgraph.prebuilt import ToolNode, tools_condition
+    from langgraph.checkpoint.memory import MemorySaver
+    from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
+    from langchain_core.documents import Document
+    from langgraph.graph.message import add_messages
+except ImportError as e:
+    st.error(f"🚨 Libraries missing! Error: {e}")
+    st.stop()
+
+# --- 3. UNIVERSAL FILE PROCESSOR (OCR & PDF) ---
+class FileProcessor:
+    """Handles PDFs, Text files, and Images (OCR)"""
+    
+    @staticmethod
+    def extract_text_from_file(uploaded_file):
+        file_ext = uploaded_file.name.split(".")[-1].lower()
+        text_content = ""
+        
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_ext}") as temp_file:
+            temp_file.write(uploaded_file.getbuffer())
+            temp_path = temp_file.name
+
+        try:
+            # STRATEGY 1: PDF
+            if file_ext == "pdf":
+                loader = PyPDFLoader(temp_path)
+                docs = loader.load()
+                text_content = "\n".join([d.page_content for d in docs])
+            
+            # STRATEGY 2: IMAGES (OCR)
+            elif file_ext in ["png", "jpg", "jpeg", "bmp"]:
+                image = Image.open(temp_path)
+                text_content = pytesseract.image_to_string(image)
+                text_content = f"[IMAGE CONTENT FROM {uploaded_file.name}]:\n{text_content}"
+            
+            # STRATEGY 3: TEXT/CODE
+            elif file_ext in ["txt", "md", "py", "csv"]:
+                with open(temp_path, "r", encoding="utf-8") as f:
+                    text_content = f.read()
+            
+            else:
+                return None  # Unsupported file
+                
+        except Exception as e:
+            st.error(f"Error reading {uploaded_file.name}: {e}")
+            return None
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            
+        return text_content
+
+# --- 4. RAG ENGINE (BRAIN) ---
+class RAGEngine:
+    def __init__(self, api_keys):
+        self.groq_key = api_keys.get("GROQ_API_KEY")
+        self.openai_key = api_keys.get("OPENAI_API_KEY")
+        self.google_key = api_keys.get("GOOGLE_API_KEY")
+        self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+    def get_llm(self, model_choice):
+        """Factory for Model Selection"""
+        if "Llama" in model_choice:
+            return ChatGroq(model="llama-3.1-8b-instant", api_key=self.groq_key, temperature=0)
+        elif "GPT" in model_choice:
+            return ChatOpenAI(model="gpt-4o", api_key=self.openai_key, temperature=0)
+        elif "Gemini" in model_choice:
+            return ChatGoogleGenerativeAI(model="gemini-1.5-pro", google_api_key=self.google_key, temperature=0)
+        return ChatGroq(model="llama-3.1-70b-versatile", api_key=self.groq_key)
+
+    def ingest_files(self, files_list):
+        """Processes MULTIPLE files (PDFs/Images) into ONE vector store"""
+        all_text_chunks = []
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        
+        total_files = 0
+        
+        for file in files_list:
+            raw_text = FileProcessor.extract_text_from_file(file)
+            if raw_text and len(raw_text) > 10: # Ignore empty/unreadable files
+                doc = Document(page_content=raw_text, metadata={"source": file.name})
+                chunks = splitter.split_documents([doc])
+                all_text_chunks.extend(chunks)
+                total_files += 1
+        
+        if not all_text_chunks:
+            return None, 0
+
+        # Create Vector Store
+        vectorstore = FAISS.from_documents(all_text_chunks, self.embeddings)
+        retriever = vectorstore.as_retriever()
+        
+        # Define the Retrieval Tool
+        @tool
+        def knowledge_base(query: str):
+            """Search the uploaded files (PDFs, Images, Text) for answers."""
+            results = retriever.invoke(query)
+            if not results:
+                return "NO_DATA_FOUND"
+            # Return context with Source Filename attached
+            return "\n\n".join([f"[Source: {d.metadata['source']}] {d.page_content}" for d in results])
+            
+        return knowledge_base, total_files
+
+    def create_agent(self, model_name, file_tool=None):
+        # 1. Define Web Tools
+        web_tools = [
+            WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper()),
+            ArxivQueryRun(api_wrapper=ArxivAPIWrapper()),
+            DuckDuckGoSearchRun()
+        ]
+        
+        # 2. Combine Tools (File Tool Priority)
+        all_tools = web_tools
+        if file_tool:
+            all_tools = [file_tool] + web_tools
+
+        llm = self.get_llm(model_name)
+        llm_with_tools = llm.bind_tools(all_tools)
+        
+        # 3. LangGraph Setup
+        class State(TypedDict):
+            messages: Annotated[List[BaseMessage], add_messages]
+            
+        def reasoner(state: State):
+            return {"messages": [llm_with_tools.invoke(state["messages"])]}
+            
+        graph = StateGraph(State)
+        graph.add_node("agent", reasoner)
+        graph.add_node("tools", ToolNode(all_tools))
+        
+        graph.add_edge(START, "agent")
+        graph.add_conditional_edges("agent", tools_condition)
+        graph.add_edge("tools", "agent")
+        
+        return graph.compile(checkpointer=MemorySaver())
 
 # --- 5. MAIN APP UI WITH MULTI-CHAT ---
 def main():
@@ -11,7 +181,7 @@ def main():
         }
         engine = RAGEngine(api_keys)
     except Exception:
-        st.error("🚨 Secrets not found! Please check your .streamlit/secrets.toml")
+        st.error("🚨 Secrets not found! If you are on Streamlit Cloud, go to 'Settings' > 'Secrets' and paste your keys.")
         st.stop()
 
     # --- INITIALIZE SESSION STATE FOR MULTI-CHAT ---
@@ -26,7 +196,7 @@ def main():
 
     # --- SIDEBAR ---
     with st.sidebar:
-        st.title("🧠 NAVAM-LLM")
+        st.title("🧠 OmniAgent Ultra")
         st.caption("Multi-Modal • Anti-Hallucination")
         
         model_choice = st.selectbox("Choose Brain", 
