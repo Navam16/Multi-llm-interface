@@ -1,20 +1,34 @@
 streamlit
+
+# Core LangChain stack
 langchain-core
 langchain-community
+langchain-text-splitters
+langgraph
+
+# LLM providers
 langchain-groq
 langchain-openai
 langchain-google-genai
-langchain-text-splitters
+
+# Embeddings
 langchain-huggingface
-langgraph
-pypdf
-faiss-cpu
 sentence-transformers
-wikipedia
-arxiv
-duckduckgo-search>=6.1.0
+
+# Vector DB
+faiss-cpu
+
+# Document loaders
+pypdf
+unstructured
+chardet
 pillow
 pytesseract
-unstructured
+
+# Search & knowledge tools
+wikipedia
+arxiv
+ddgs
+
+# Utilities
 networkx
-chardet
