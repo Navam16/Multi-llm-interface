@@ -24,7 +24,11 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 
-from langchain_community.tools import WikipediaQueryRun, ArxivQueryRun, DuckDuckGoSearchRun
+from langchain_community.tools import (
+    WikipediaQueryRun,
+    ArxivQueryRun,
+    DuckDuckGoSearchRun,
+)
 from langchain_community.utilities import WikipediaAPIWrapper, ArxivAPIWrapper
 
 from langchain_core.tools import tool, StructuredTool
@@ -51,12 +55,16 @@ class FileProcessor:
             if ext == "pdf":
                 docs = PyPDFLoader(path).load()
                 return "\n".join(d.page_content for d in docs)
+
             if ext in ["png", "jpg", "jpeg"]:
                 return pytesseract.image_to_string(Image.open(path))
+
             if ext in ["txt", "md"]:
-                return open(path, encoding="utf-8").read()
+                with open(path, encoding="utf-8", errors="ignore") as f:
+                    return f.read()
         finally:
             os.remove(path)
+
         return None
 
 # =======================
@@ -65,26 +73,30 @@ class FileProcessor:
 class RAGEngine:
     def __init__(self, keys):
         self.keys = keys
-        self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2"
+        )
 
     def get_llm(self, choice):
         if "Llama" in choice:
             return ChatGroq(
                 model="llama-3.1-8b-instant",
                 api_key=self.keys["GROQ_API_KEY"],
-                temperature=0
+                temperature=0,
             )
+
         if "GPT" in choice:
             return ChatOpenAI(
                 model="gpt-4o",
                 api_key=self.keys["OPENAI_API_KEY"],
-                temperature=0
+                temperature=0,
             )
+
         if "Gemini" in choice:
             return ChatGoogleGenerativeAI(
                 model="gemini-1.5-pro",
                 google_api_key=self.keys["GOOGLE_API_KEY"],
-                temperature=0
+                temperature=0,
             )
 
     # -------- RAG INGEST --------
@@ -92,46 +104,59 @@ class RAGEngine:
         if not files:
             return None
 
-        splitter = RecursiveCharacterTextSplitter(1000, 200)
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+        )
+
         docs = []
 
         for f in files:
             text = FileProcessor.extract_text(f)
-            if text:
-                docs.extend(
-                    splitter.split_documents(
-                        [Document(page_content=text, metadata={"source": f.name})]
-                    )
+            if not text:
+                continue
+
+            docs.extend(
+                splitter.split_documents(
+                    [
+                        Document(
+                            page_content=text,
+                            metadata={"source": f.name},
+                        )
+                    ]
                 )
+            )
 
         if not docs:
             return None
 
         store = FAISS.from_documents(docs, self.embeddings)
-        retriever = store.as_retriever(k=4)
+        retriever = store.as_retriever(search_kwargs={"k": 4})
 
         @tool("knowledge_base", description="Search uploaded documents")
         def knowledge_base(query: str) -> str:
             results = retriever.invoke(query)
             if not results:
                 return "NO_DATA_FOUND"
-            text = "\n\n".join(r.page_content for r in results)
-            sources = ", ".join({r.metadata["source"] for r in results})
-            return f"{text}\n\nSource: {sources}"
+
+            content = "\n\n".join(r.page_content for r in results)
+            sources = ", ".join(
+                sorted({r.metadata.get("source", "Unknown") for r in results})
+            )
+            return f"{content}\n\nSource: {sources}"
 
         return knowledge_base
 
     # -------- AGENT --------
     def create_agent(self, model_choice, kb_tool):
-        references: List[str] = []
+        references: List[str] = []  # reset PER AGENT
 
-        # Calculator (static tool = safe)
         @tool("calculator", description="Evaluate math expressions")
         def calculator(expr: str) -> str:
             try:
                 references.append("Calculator")
                 return str(eval(expr, {"__builtins__": {}}))
-            except:
+            except Exception:
                 return "Invalid expression"
 
         wiki = WikipediaQueryRun(
@@ -142,7 +167,6 @@ class RAGEngine:
         )
         ddg = DuckDuckGoSearchRun()
 
-        # ✅ SAFE dynamic wrapper (NO decorators)
         def wrap(tool_obj, name):
             def _run(query: str) -> str:
                 references.append(name)
@@ -151,14 +175,14 @@ class RAGEngine:
             return StructuredTool.from_function(
                 func=_run,
                 name=name,
-                description=f"Search via {name}"
+                description=f"Search via {name}",
             )
 
         tools = [
             calculator,
             wrap(wiki, "Wikipedia"),
             wrap(arxiv, "Arxiv"),
-            wrap(ddg, "DuckDuckGo")
+            wrap(ddg, "DuckDuckGo"),
         ]
 
         if kb_tool:
@@ -171,16 +195,21 @@ class RAGEngine:
 
         def agent(state: State):
             response = llm.invoke(state["messages"])
+
             if references:
                 response.content += (
                     "\n\n---\n**References:**\n"
-                    + "\n".join(f"- {r}" for r in dict.fromkeys(references))
+                    + "\n".join(
+                        f"- {r}" for r in dict.fromkeys(references)
+                    )
                 )
+
             return {"messages": [response]}
 
         graph = StateGraph(State)
         graph.add_node("agent", agent)
         graph.add_node("tools", ToolNode(tools))
+
         graph.add_edge(START, "agent")
         graph.add_conditional_edges("agent", tools_condition)
         graph.add_edge("tools", "agent")
@@ -194,7 +223,7 @@ def main():
     keys = {
         "GROQ_API_KEY": st.secrets["GROQ_API_KEY"],
         "OPENAI_API_KEY": st.secrets["OPENAI_API_KEY"],
-        "GOOGLE_API_KEY": st.secrets["GOOGLE_API_KEY"]
+        "GOOGLE_API_KEY": st.secrets["GOOGLE_API_KEY"],
     }
 
     engine = RAGEngine(keys)
@@ -210,12 +239,16 @@ def main():
 
         model = st.selectbox(
             "Choose Brain",
-            ["Llama 3.1 8B (Groq)", "GPT-4o (OpenAI)", "Gemini 1.5 Pro (Google)"]
+            [
+                "Llama 3.1 8B (Groq)",
+                "GPT-4o (OpenAI)",
+                "Gemini 1.5 Pro (Google)",
+            ],
         )
 
         uploaded = st.file_uploader(
             "Knowledge Base",
-            accept_multiple_files=True
+            accept_multiple_files=True,
         )
         kb_tool = engine.ingest(uploaded)
 
@@ -240,24 +273,34 @@ def main():
         st.chat_message("user").markdown(prompt)
 
         agent = engine.create_agent(model, kb_tool)
-        config = {"configurable": {"thread_id": st.session_state.active}}
+        config = {
+            "configurable": {
+                "thread_id": st.session_state.active
+            }
+        }
 
         with st.chat_message("assistant"):
             result = agent.invoke(
                 {
                     "messages": [
                         SystemMessage(
-                            content="Use documents first. If unavailable, use tools. Always be factual."
+                            content=(
+                                "Answer using uploaded documents first. "
+                                "If insufficient, use tools. "
+                                "Always cite references."
+                            )
                         ),
-                        HumanMessage(content=prompt)
+                        HumanMessage(content=prompt),
                     ]
                 },
-                config=config
+                config=config,
             )
+
             reply = result["messages"][-1].content
             st.markdown(reply)
 
         messages.append({"role": "assistant", "content": reply})
+
 
 if __name__ == "__main__":
     main()
