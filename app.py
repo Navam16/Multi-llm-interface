@@ -27,7 +27,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.tools import WikipediaQueryRun, ArxivQueryRun, DuckDuckGoSearchRun
 from langchain_community.utilities import WikipediaAPIWrapper, ArxivAPIWrapper
 
-from langchain_core.tools import tool
+from langchain_core.tools import tool, StructuredTool
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.documents import Document
 
@@ -69,14 +69,23 @@ class RAGEngine:
 
     def get_llm(self, choice):
         if "Llama" in choice:
-            return ChatGroq(model="llama-3.1-8b-instant",
-                            api_key=self.keys["GROQ_API_KEY"], temperature=0)
+            return ChatGroq(
+                model="llama-3.1-8b-instant",
+                api_key=self.keys["GROQ_API_KEY"],
+                temperature=0
+            )
         if "GPT" in choice:
-            return ChatOpenAI(model="gpt-4o",
-                              api_key=self.keys["OPENAI_API_KEY"], temperature=0)
+            return ChatOpenAI(
+                model="gpt-4o",
+                api_key=self.keys["OPENAI_API_KEY"],
+                temperature=0
+            )
         if "Gemini" in choice:
-            return ChatGoogleGenerativeAI(model="gemini-1.5-pro",
-                                          google_api_key=self.keys["GOOGLE_API_KEY"], temperature=0)
+            return ChatGoogleGenerativeAI(
+                model="gemini-1.5-pro",
+                google_api_key=self.keys["GOOGLE_API_KEY"],
+                temperature=0
+            )
 
     # -------- RAG INGEST --------
     def ingest(self, files):
@@ -107,15 +116,16 @@ class RAGEngine:
             if not results:
                 return "NO_DATA_FOUND"
             text = "\n\n".join(r.page_content for r in results)
-            sources = list({r.metadata["source"] for r in results})
-            return f"{text}\n\nSource: {', '.join(sources)}"
+            sources = ", ".join({r.metadata["source"] for r in results})
+            return f"{text}\n\nSource: {sources}"
 
         return knowledge_base
 
     # -------- AGENT --------
     def create_agent(self, model_choice, kb_tool):
-        references = []
+        references: List[str] = []
 
+        # Calculator (static tool = safe)
         @tool("calculator", description="Evaluate math expressions")
         def calculator(expr: str) -> str:
             try:
@@ -132,12 +142,17 @@ class RAGEngine:
         )
         ddg = DuckDuckGoSearchRun()
 
+        # ✅ SAFE dynamic wrapper (NO decorators)
         def wrap(tool_obj, name):
-            @tool(name=name, description=f"Search via {name}")
-            def wrapped(query: str) -> str:
+            def _run(query: str) -> str:
                 references.append(name)
                 return tool_obj.run(query)
-            return wrapped
+
+            return StructuredTool.from_function(
+                func=_run,
+                name=name,
+                description=f"Search via {name}"
+            )
 
         tools = [
             calculator,
@@ -157,8 +172,9 @@ class RAGEngine:
         def agent(state: State):
             response = llm.invoke(state["messages"])
             if references:
-                response.content += "\n\n---\n**References:**\n" + "\n".join(
-                    f"- {r}" for r in dict.fromkeys(references)
+                response.content += (
+                    "\n\n---\n**References:**\n"
+                    + "\n".join(f"- {r}" for r in dict.fromkeys(references))
                 )
             return {"messages": [response]}
 
@@ -197,7 +213,10 @@ def main():
             ["Llama 3.1 8B (Groq)", "GPT-4o (OpenAI)", "Gemini 1.5 Pro (Google)"]
         )
 
-        uploaded = st.file_uploader("Knowledge Base", accept_multiple_files=True)
+        uploaded = st.file_uploader(
+            "Knowledge Base",
+            accept_multiple_files=True
+        )
         kb_tool = engine.ingest(uploaded)
 
         st.markdown("### 💬 Chats")
@@ -225,8 +244,14 @@ def main():
 
         with st.chat_message("assistant"):
             result = agent.invoke(
-                {"messages": [SystemMessage(content="Answer using documents first, then tools."),
-                              HumanMessage(content=prompt)]},
+                {
+                    "messages": [
+                        SystemMessage(
+                            content="Use documents first. If unavailable, use tools. Always be factual."
+                        ),
+                        HumanMessage(content=prompt)
+                    ]
+                },
                 config=config
             )
             reply = result["messages"][-1].content
