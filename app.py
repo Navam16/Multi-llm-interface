@@ -235,7 +235,7 @@ def main():
         st.session_state.active = cid
 
     with st.sidebar:
-        st.title("🧠 OmniAgent Ultra")
+        st.title("🧠 Navam's LLM")
 
         model = st.selectbox(
             "Choose Brain",
