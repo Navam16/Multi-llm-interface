@@ -24,8 +24,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 
-from langchain_community.tools import WikipediaQueryRun, ArxivQueryRun
+from langchain_community.tools import WikipediaQueryRun, ArxivQueryRun, DuckDuckGoSearchRun
 from langchain_community.utilities import WikipediaAPIWrapper, ArxivAPIWrapper
+
 from langchain_core.tools import tool
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.documents import Document
@@ -34,12 +35,6 @@ from langgraph.graph import StateGraph, START
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
-
-try:
-    from langchain_community.tools import DuckDuckGoSearchRun
-    DDG_AVAILABLE = True
-except:
-    DDG_AVAILABLE = False
 
 # =======================
 # FILE PROCESSOR
@@ -74,24 +69,16 @@ class RAGEngine:
 
     def get_llm(self, choice):
         if "Llama" in choice:
-            return ChatGroq(
-                model="llama-3.1-8b-instant",
-                api_key=self.keys["GROQ_API_KEY"],
-                temperature=0
-            )
+            return ChatGroq(model="llama-3.1-8b-instant",
+                            api_key=self.keys["GROQ_API_KEY"], temperature=0)
         if "GPT" in choice:
-            return ChatOpenAI(
-                model="gpt-4o",
-                api_key=self.keys["OPENAI_API_KEY"],
-                temperature=0
-            )
+            return ChatOpenAI(model="gpt-4o",
+                              api_key=self.keys["OPENAI_API_KEY"], temperature=0)
         if "Gemini" in choice:
-            return ChatGoogleGenerativeAI(
-                model="gemini-1.5-pro",
-                google_api_key=self.keys["GOOGLE_API_KEY"],
-                temperature=0
-            )
+            return ChatGoogleGenerativeAI(model="gemini-1.5-pro",
+                                          google_api_key=self.keys["GOOGLE_API_KEY"], temperature=0)
 
+    # -------- RAG INGEST --------
     def ingest(self, files):
         if not files:
             return None
@@ -114,32 +101,23 @@ class RAGEngine:
         store = FAISS.from_documents(docs, self.embeddings)
         retriever = store.as_retriever(k=4)
 
-        @tool
-        def knowledge_base(query: str):
-            """Search uploaded documents"""
+        @tool("knowledge_base", description="Search uploaded documents")
+        def knowledge_base(query: str) -> str:
             results = retriever.invoke(query)
             if not results:
-                return {"answer": "NO_DATA_FOUND", "source": "Documents"}
-
+                return "NO_DATA_FOUND"
             text = "\n\n".join(r.page_content for r in results)
             sources = list({r.metadata["source"] for r in results})
-            return {"answer": text, "source": f"Documents: {', '.join(sources)}"}
+            return f"{text}\n\nSource: {', '.join(sources)}"
 
         return knowledge_base
 
+    # -------- AGENT --------
     def create_agent(self, model_choice, kb_tool):
         references = []
 
-        @tool
-        def route_query(query: str):
-            if any(x in query.lower() for x in ["calculate", "+", "-", "*", "/", "%"]):
-                return "MATH"
-            if any(x in query.lower() for x in ["who", "latest", "news", "when"]):
-                return "WEB"
-            return "DOCUMENT"
-
-        @tool
-        def calculator(expr: str):
+        @tool("calculator", description="Evaluate math expressions")
+        def calculator(expr: str) -> str:
             try:
                 references.append("Calculator")
                 return str(eval(expr, {"__builtins__": {}}))
@@ -152,32 +130,24 @@ class RAGEngine:
         arxiv = ArxivQueryRun(
             api_wrapper=ArxivAPIWrapper()
         )
+        ddg = DuckDuckGoSearchRun()
 
-        def wrap_tool(tool_obj, name):
-            @tool
-            def wrapped(query: str):
+        def wrap(tool_obj, name):
+            @tool(name=name, description=f"Search via {name}")
+            def wrapped(query: str) -> str:
                 references.append(name)
                 return tool_obj.run(query)
             return wrapped
 
         tools = [
-            route_query,
             calculator,
-            wrap_tool(wiki, "Wikipedia"),
-            wrap_tool(arxiv, "Arxiv")
+            wrap(wiki, "Wikipedia"),
+            wrap(arxiv, "Arxiv"),
+            wrap(ddg, "DuckDuckGo")
         ]
 
-        if DDG_AVAILABLE:
-            tools.append(wrap_tool(DuckDuckGoSearchRun(), "DuckDuckGo"))
-
         if kb_tool:
-            def kb_wrapper(query: str):
-                result = kb_tool.run(query)
-                if isinstance(result, dict):
-                    references.append(result["source"])
-                    return result["answer"]
-                return result
-            tools.append(tool(kb_wrapper))
+            tools.insert(0, kb_tool)
 
         llm = self.get_llm(model_choice).bind_tools(tools)
 
@@ -202,7 +172,7 @@ class RAGEngine:
         return graph.compile(checkpointer=MemorySaver())
 
 # =======================
-# STREAMLIT UI (CHATGPT STYLE)
+# STREAMLIT UI
 # =======================
 def main():
     keys = {
@@ -215,8 +185,9 @@ def main():
 
     if "chats" not in st.session_state:
         st.session_state.chats = {}
-        st.session_state.active_chat = str(uuid.uuid4())
-        st.session_state.chats[st.session_state.active_chat] = []
+        cid = str(uuid.uuid4())
+        st.session_state.chats[cid] = []
+        st.session_state.active = cid
 
     with st.sidebar:
         st.title("🧠 OmniAgent Ultra")
@@ -226,25 +197,21 @@ def main():
             ["Llama 3.1 8B (Groq)", "GPT-4o (OpenAI)", "Gemini 1.5 Pro (Google)"]
         )
 
-        uploaded = st.file_uploader(
-            "Knowledge Base",
-            accept_multiple_files=True
-        )
-
+        uploaded = st.file_uploader("Knowledge Base", accept_multiple_files=True)
         kb_tool = engine.ingest(uploaded)
 
         st.markdown("### 💬 Chats")
         for cid in st.session_state.chats:
             if st.button(cid[:8], key=cid):
-                st.session_state.active_chat = cid
+                st.session_state.active = cid
 
         if st.button("➕ New Chat"):
             cid = str(uuid.uuid4())
             st.session_state.chats[cid] = []
-            st.session_state.active_chat = cid
+            st.session_state.active = cid
             st.rerun()
 
-    messages = st.session_state.chats[st.session_state.active_chat]
+    messages = st.session_state.chats[st.session_state.active]
 
     for m in messages:
         st.chat_message(m["role"]).markdown(m["content"])
@@ -254,18 +221,18 @@ def main():
         st.chat_message("user").markdown(prompt)
 
         agent = engine.create_agent(model, kb_tool)
-        config = {"configurable": {"thread_id": st.session_state.active_chat}}
+        config = {"configurable": {"thread_id": st.session_state.active}}
 
         with st.chat_message("assistant"):
             result = agent.invoke(
-                {"messages": [SystemMessage(content="You are a factual agent."), HumanMessage(content=prompt)]},
+                {"messages": [SystemMessage(content="Answer using documents first, then tools."),
+                              HumanMessage(content=prompt)]},
                 config=config
             )
             reply = result["messages"][-1].content
             st.markdown(reply)
 
         messages.append({"role": "assistant", "content": reply})
-        st.session_state.chats[st.session_state.active_chat] = messages
 
 if __name__ == "__main__":
     main()
